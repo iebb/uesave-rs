@@ -163,9 +163,9 @@ fn read_properties_until_none<R: Read + Seek>(reader: &mut Context<R>) -> TResul
                 Property::Array { id, value, .. } => {
                     match value {
                         ValueArray::Base(ValueVec::Byte(ByteArray::Byte(v))) => {
-                            let buf = std::io::Cursor::new(v.as_slice());
-                            let mut temp_buf = std::io::BufReader::new(buf);
-                            let mut temp_reader = Context::<'_, '_, '_, '_, std::io::BufReader<Cursor<&[u8]>>> {
+                            let buf = Cursor::new(v.as_slice());
+                            let mut temp_buf = SeekReader::new(buf);
+                            let mut temp_reader = Context::<'_, '_, '_, '_, SeekReader<Cursor<&[u8]>>> {
                                 stream: &mut temp_buf,
                                 header: reader.header,
                                 types: reader.types,
