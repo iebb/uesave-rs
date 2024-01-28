@@ -51,6 +51,8 @@ trait Writable<W> {
 struct SeekReader<R: Read> {
     reader: R,
     read_bytes: usize,
+    _prev_report_bytes: usize,
+    callback: Option<fn(usize) -> TResult<()>>,
 }
 
 impl<R: Read> SeekReader<R> {
@@ -58,6 +60,16 @@ impl<R: Read> SeekReader<R> {
         Self {
             reader,
             read_bytes: 0,
+            _prev_report_bytes: 0,
+            callback: Option::None,
+        }
+    }
+    fn new_with_callback(reader: R, callback: Option<fn(usize) -> TResult<()>>) -> Self {
+        Self {
+            reader,
+            read_bytes: 0,
+            _prev_report_bytes: 0,
+            callback,
         }
     }
 }
@@ -73,6 +85,12 @@ impl<R: Read> Read for SeekReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buf).map(|s| {
             self.read_bytes += s;
+            if self.callback.is_some() {
+                if self.read_bytes - self._prev_report_bytes >= 1_000_000 {
+                    self.callback.unwrap()(self.read_bytes).unwrap();
+                    self._prev_report_bytes = self.read_bytes;
+                }
+            }
             s
         })
     }
@@ -380,7 +398,6 @@ impl<'stream, 'header, 'types, 'scope, R: Read + Seek>
     where
         'types: 't,
     {
-        let offset = self.stream.stream_position()?;
         Ok(self.get_type().unwrap_or_else(|| t))
     }
 }
@@ -2553,6 +2570,38 @@ impl Save {
     /// Reads save from the given reader using the provided [`Types`]
     pub fn read_with_types<R: Read>(reader: &mut R, types: &Types) -> Result<Self, ParseError> {
         let mut reader = SeekReader::new(reader);
+
+        Context::run_with_types(types, &mut reader, |reader| {
+            let header = Header::read(reader)?;
+            let (root, extra) = reader.header(&header, |reader| -> TResult<_> {
+                let root = Root::read(reader)?;
+                let extra = {
+                    let mut buf = vec![];
+                    reader.read_to_end(&mut buf)?;
+                    if buf != [0; 4] {
+                        eprintln!(
+                            "{} extra bytes. Save may not have been parsed completely.",
+                            buf.len()
+                        );
+                    }
+                    buf
+                };
+                Ok((root, extra))
+            })?;
+
+            Ok(Self {
+                header,
+                root,
+                extra,
+            })
+        })
+        .map_err(|e| error::ParseError {
+            offset: reader.stream_position().unwrap() as usize, // our own implemenation which cannot fail
+            error: e,
+        })
+    }
+    pub fn read_with_types_and_callback<R: Read>(reader: &mut R, types: &Types, callback: fn(usize) -> TResult<()>) -> Result<Self, ParseError> {
+        let mut reader = SeekReader::new_with_callback(reader, Some(callback));
 
         Context::run_with_types(types, &mut reader, |reader| {
             let header = Header::read(reader)?;
